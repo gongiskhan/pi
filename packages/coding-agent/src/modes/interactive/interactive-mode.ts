@@ -114,6 +114,7 @@ import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./c
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import { type AuthSelectorProvider, OAuthSelectorComponent } from "./components/oauth-selector.ts";
+import { resolveLoginTarget } from "./login-target.ts"; // EKOA
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
 import { SettingsSelectorComponent } from "./components/settings-selector.ts";
@@ -2565,8 +2566,19 @@ export class InteractiveMode {
 				return;
 			}
 			if (text === "/login") {
-				this.showOAuthSelector("login");
 				this.editor.setText("");
+				// EKOA: when an auth provider is configured (defaultAuthProvider), sign into it
+				// directly and skip the multi-provider selector, so users never see Anthropic
+				// et al. resolveLoginTarget returns null when unset/unavailable -> upstream path.
+				const loginTarget = resolveLoginTarget(
+					this.settingsManager.getDefaultAuthProvider(),
+					this.getLoginProviderOptions("oauth"),
+				);
+				if (loginTarget) {
+					await this.showLoginDialog(loginTarget.id, loginTarget.name);
+				} else {
+					await this.showOAuthSelector("login");
+				}
 				return;
 			}
 			if (text === "/logout") {
