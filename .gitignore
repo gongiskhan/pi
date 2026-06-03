@@ -39,3 +39,6 @@ plans/
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
 collect.sh
+
+# EKOA: packed tarballs from npm pack (built in CI, never committed)
+packages/*/*.tgz

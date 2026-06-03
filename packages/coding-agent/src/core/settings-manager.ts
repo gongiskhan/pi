@@ -77,6 +77,9 @@ export type PackageSource =
 export interface Settings {
 	lastChangelogVersion?: string;
 	defaultProvider?: string;
+	// EKOA: when set, /login signs into this provider directly and skips the
+	// multi-provider auth selector (so users never see Anthropic et al.).
+	defaultAuthProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	transport?: TransportSetting; // default: "auto"
@@ -596,6 +599,11 @@ export class SettingsManager {
 
 	getDefaultProvider(): string | undefined {
 		return this.settings.defaultProvider;
+	}
+
+	// EKOA: provider id that /login signs into directly (see Settings.defaultAuthProvider).
+	getDefaultAuthProvider(): string | undefined {
+		return this.settings.defaultAuthProvider;
 	}
 
 	getDefaultModel(): string | undefined {
