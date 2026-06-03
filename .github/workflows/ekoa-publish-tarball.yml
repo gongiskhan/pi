@@ -1,0 +1,58 @@
+name: EKOA publish tarball
+
+# On every push to main that touches coding-agent (e.g. after a sync PR merges),
+# build and pack pi-coding-agent and publish it as a Release asset. ekoa-local
+# consumes this asset by URL (see its ekoa-adopt-pi workflow). Keeps the npm build
+# confined to the fork's CI and ekoa-local's history free of binaries.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/coding-agent/**"
+      - "packages/ai/**"
+      - "packages/agent/**"
+      - "packages/tui/**"
+      - ".github/workflows/ekoa-publish-tarball.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ekoa-publish-tarball
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+
+      - name: Build + pack pi-coding-agent
+        id: pack
+        run: |
+          npm install --ignore-scripts
+          npm run build
+          cd packages/coding-agent
+          TGZ=$(npm pack | tail -1)
+          echo "tgz=$TGZ" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Publish/refresh Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd packages/coding-agent
+          TAG="pi-coding-agent-v${{ steps.pack.outputs.version }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${{ steps.pack.outputs.tgz }}" --clobber
+          else
+            gh release create "$TAG" "${{ steps.pack.outputs.tgz }}" \
+              --title "$TAG" \
+              --notes "Ekoa fork build of pi-coding-agent ${{ steps.pack.outputs.version }} (includes the /login patch; see EKOA_PATCHES.md). Consumed by ekoa-local via release-asset URL."
+          fi
+          echo "Published $TAG"

@@ -1,0 +1,127 @@
+name: EKOA sync upstream
+
+# Weekly: merge earendil-works/pi main into this fork, let Claude resolve any
+# conflicts + fix merge breakage (honoring EKOA_PATCHES.md), gate on build + the
+# Ekoa regression test, and open a PR for a human to merge. Never auto-merges.
+#
+# Requires repo secret ANTHROPIC_API_KEY (the Claude Code action). The hard gate
+# is deliberately build + the Ekoa regression test, NOT `./test.sh` exit 0 — the
+# upstream baseline has one pre-existing env failure (see EKOA_PATCHES.md); the
+# full suite is run but only reported.
+
+on:
+  schedule:
+    - cron: "17 4 * * 1" # Mondays 04:17 UTC (off-peak, off-:00)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ekoa-sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+
+      - name: Configure git + fetch upstream
+        run: |
+          git config user.name "ekoa-sync[bot]"
+          git config user.email "ekoa-sync@users.noreply.github.com"
+          git remote add upstream https://github.com/earendil-works/pi.git
+          git fetch upstream --no-tags --quiet
+
+      - name: Any upstream changes?
+        id: check
+        run: echo "behind=$(git rev-list --count HEAD..upstream/main)" >> "$GITHUB_OUTPUT"
+
+      - name: Create sync branch + attempt merge
+        if: steps.check.outputs.behind != '0'
+        id: merge
+        run: |
+          BRANCH="sync/upstream-$(git rev-parse --short upstream/main)-${{ github.run_id }}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git switch -c "$BRANCH"
+          if git merge --no-edit upstream/main; then
+            echo "conflicts=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflicts=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Claude — resolve conflicts + make the gate pass
+        if: steps.check.outputs.behind != '0'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You maintain the Ekoa fork of the `pi` monorepo. A merge of `upstream/main`
+            into branch `${{ steps.merge.outputs.branch }}` is in progress (conflicts:
+            ${{ steps.merge.outputs.conflicts }}).
+
+            FIRST read `EKOA_PATCHES.md` at the repo root — it lists the intentional Ekoa
+            deltas you MUST preserve. The non-negotiable invariant: the `/login` patch and
+            its guard `packages/coding-agent/test/login-target.test.ts` must survive.
+
+            Then, in order:
+            1. If `git status` shows conflicts, resolve every one — keep upstream's changes
+               PLUS the Ekoa deltas — then `git add` and complete the merge commit.
+            2. Make the build and the Ekoa regression test pass, fixing only breakage the
+               merge introduced (e.g. a renamed symbol a `// EKOA:` edit depends on):
+                 npm install --ignore-scripts
+                 npm run build
+                 npm test -w @earendil-works/pi-coding-agent -- --run login-target
+            3. If the merge was already clean and both already pass, make NO changes.
+
+            Do NOT push or open a PR — the workflow does that. Do not edit generated files
+            (`packages/ai/src/*.generated.ts`) or `package-lock.json` beyond what the merge
+            itself changed. Be surgical.
+          claude_args: |
+            --max-turns 40
+            --allowedTools Bash,Edit,Read,Write,Grep,Glob
+
+      - name: Hard gate — build + Ekoa regression test
+        if: steps.check.outputs.behind != '0'
+        id: gate
+        continue-on-error: true
+        run: |
+          npm install --ignore-scripts
+          npm run build
+          npm test -w @earendil-works/pi-coding-agent -- --run login-target
+
+      - name: Full suite (reported, non-blocking)
+        if: steps.check.outputs.behind != '0'
+        continue-on-error: true
+        run: ./test.sh 2>&1 | tail -50 || true
+
+      - name: Commit resolution + push branch
+        if: steps.check.outputs.behind != '0'
+        run: |
+          git add -A
+          git commit -m "EKOA: sync upstream $(git rev-parse --short upstream/main)" || echo "clean merge, nothing extra to commit"
+          git push origin "${{ steps.merge.outputs.branch }}"
+
+      - name: Open PR (draft if gate failed)
+        if: steps.check.outputs.behind != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DRAFT=""; PREFIX=""
+          if [ "${{ steps.gate.outcome }}" != "success" ]; then DRAFT="--draft"; PREFIX="[needs attention] "; fi
+          gh pr create --base main --head "${{ steps.merge.outputs.branch }}" \
+            --title "${PREFIX}EKOA: sync upstream $(git rev-parse --short upstream/main)" $DRAFT \
+            --body "Automated weekly upstream sync.
+
+          - Hard gate (build + Ekoa \`login-target\` regression test): **${{ steps.gate.outcome }}**
+          - Conflicts resolved by Claude: **${{ steps.merge.outputs.conflicts }}**
+
+          Full \`./test.sh\` output is in the run logs (reported, non-blocking — the upstream baseline has one known \`session-id-readonly\` env failure). Review and merge manually." || echo "PR may already exist for this branch"
